@@ -209,7 +209,7 @@ public class OTPInput extends JFrame {
             factory = TerminalFactory.getDefault();
             terminals = factory.terminals().list();
             terminal = terminals.get(0);
-            card = terminal.connect("T=1");
+            card = terminal.connect("T=0");
             channel = card.getBasicChannel();
             if (terminals.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Không tìm thấy trình đọc thẻ.");

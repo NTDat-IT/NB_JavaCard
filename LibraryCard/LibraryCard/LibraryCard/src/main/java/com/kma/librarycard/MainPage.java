@@ -12,13 +12,20 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.math.BigInteger;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
@@ -45,12 +52,19 @@ public class MainPage extends JFrame {
     private Card card; // Giữ kết nối thẻ
     private CardChannel channel;
     private String validatedOtp = "";
+    
+    
+  static String url = "jdbc:mysql://localhost:3306/lib_javacard";
+  static String user = "root";
+   static String password = "";
 
     public void setValidatedOtp(String validatedOtp) {
         this.validatedOtp = validatedOtp;
     }
 
     public MainPage() {
+        
+       conn();
         setTitle("Trang chủ");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(1440, 700);
@@ -132,6 +146,91 @@ public class MainPage extends JFrame {
         rightAppBar.setLayout(new BorderLayout());
         return rightAppBar;
     }
+    
+    
+    private static byte[] getCardID() throws CardException {
+        TerminalFactory factory = TerminalFactory.getDefault();
+        CardTerminals terminals = factory.terminals();
+ 
+        if (terminals.list().isEmpty()) {
+            System.out.println("Không tìm thấy trình đọc thẻ.");
+            return null;
+        }
+ 
+        CardTerminal terminal = terminals.list().get(0);
+        Card card = terminal.connect("T=0");
+        CardChannel channel = card.getBasicChannel();
+ 
+        CommandAPDU getCardIdCommand = new CommandAPDU(0xA4, 0x1D, 0x00, 0x00); // Command APDU để lấy card ID
+        ResponseAPDU response = channel.transmit(getCardIdCommand);
+ 
+        if (response.getSW() == 0x9000) {
+            return response.getData();
+        } else {
+            System.out.println("Không lấy được Card ID từ thẻ.");
+            return null;
+        }
+    }
+ 
+    // Hàm để lấy Public Key từ thẻ
+    private static byte[] getPublicKey() throws CardException {
+        TerminalFactory factory = TerminalFactory.getDefault();
+        CardTerminals terminals = factory.terminals();
+ 
+        if (terminals.list().isEmpty()) {
+            System.out.println("Không tìm thấy trình đọc thẻ.");
+            return null;
+        }
+ 
+        CardTerminal terminal = terminals.list().get(0);
+        Card card = terminal.connect("T=0");
+        CardChannel channel = card.getBasicChannel();
+ 
+        CommandAPDU getPubKeyCommand = new CommandAPDU(0xA4, 0x1A, 0x01, 0x01); // Command APDU để lấy public key
+        ResponseAPDU response = channel.transmit(getPubKeyCommand);
+ 
+        if (response.getSW() == 0x9000) {
+            return response.getData();
+        } else {
+            System.out.println("Không lấy được Public Key từ thẻ.");
+            return null;
+        }
+    }
+    
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : bytes) {
+            String hex = Integer.toHexString(0xFF & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+ 
+    // Hàm lưu thông tin vào cơ sở dữ liệu
+    private static void saveToDatabase(byte[] cardId, byte[] publicKey) {
+    String insertSQL = "INSERT INTO card_info (card_id, pubkey) VALUES (?, ?)";
+
+    try (Connection connection = DriverManager.getConnection(url, user, password); 
+         PreparedStatement preparedStatement = connection.prepareStatement(insertSQL)) {
+
+        // Gán giá trị cho các tham số
+        preparedStatement.setString(1, bytesToHex(cardId));
+        preparedStatement.setString(2, bytesToHex(publicKey));
+
+        // Thực thi câu lệnh
+        int rowsAffected = preparedStatement.executeUpdate();
+        if (rowsAffected > 0) {
+            System.out.println("Lưu thông tin thành công.");
+        } else {
+            System.out.println("Không thể lưu thông tin vào cơ sở dữ liệu.");
+        }
+    } catch (SQLException e) {
+        System.out.println("Lỗi kết nối cơ sở dữ liệu.");
+    }
+}
 
     private JPanel createTabBar() {
         JPanel tabBar = new JPanel();
@@ -183,6 +282,25 @@ public class MainPage extends JFrame {
         button.setForeground(Color.WHITE);
         button.setIconTextGap(15);
         return button;
+    }
+    
+   
+    
+    public  Connection conn()  {
+        Connection connection = null;
+        try {
+           
+            Class.forName("com.mysql.cj.jdbc.Driver");
+            connection = DriverManager.getConnection(url, user, password);
+            System.out.println("Kết nối thành công!");
+        } catch (ClassNotFoundException e) {
+            System.out.println(e);
+            System.err.println("Lỗi: Không tìm thấy driver JDBC. " + e.getMessage());
+           
+        } catch (SQLException e) {
+            System.err.println("Lỗi: Không thể kết nối tới database. " + e.getMessage());
+        }
+        return connection;
     }
 
     static class RoundedBorder extends AbstractBorder {
@@ -267,49 +385,7 @@ public class MainPage extends JFrame {
         }
     }
 
-private boolean sendToSmartCard(byte[] imageBytes) {
-    try {
-    TerminalFactory factory = TerminalFactory.getDefault();
-    CardTerminal terminal = factory.terminals().list().get(0);
-    Card card = terminal.connect("T=1");
-    CardChannel channel = card.getBasicChannel();
 
-    int chunkSize = 255;
-    int offset = 0;
-
-    // Gửi từng mảnh dữ liệu
-    while (offset < imageBytes.length) {
-        int length = Math.min(chunkSize, imageBytes.length - offset);
-        byte[] chunk = new byte[length];
-        System.arraycopy(imageBytes, offset, chunk, 0, length);
-
-        CommandAPDU command = new CommandAPDU(0xA4, 0x01, // INS_NHAP
-                (byte) (offset >> 8), (byte) (offset & 0xFF), chunk);
-        ResponseAPDU response = channel.transmit(command);
-
-        if (response.getSW() != 0x9000) {
-            System.out.println("Lỗi tại offset " + offset + ": " + Integer.toHexString(response.getSW()));
-            card.disconnect(false);
-            return false;
-        }
-
-        offset += length;
-    }
-
-    // Gửi lệnh xuất để lấy dữ liệu
-    CommandAPDU exportCommand = new CommandAPDU(0xA4, 0x02, 0x00, 0x00, 0x0000); // INS_XUAT
-    ResponseAPDU exportResponse = channel.transmit(exportCommand);
-    byte[] receivedData = exportResponse.getData();
-    System.out.println("Dữ liệu trên thẻ: " + Arrays.toString(receivedData));
-
-    card.disconnect(false);
-    return true;
-} catch (CardException e) {
-    e.printStackTrace();
-    JOptionPane.showMessageDialog(null, "Lỗi kết nối thẻ: " + e.getMessage());
-    return false;
-}
-}
 
 
 
@@ -324,7 +400,7 @@ private boolean sendToSmartCard(byte[] imageBytes) {
 
             }
             CardTerminal terminal = terminals.list().get(0);
-            Card card = terminal.connect("T=1");
+            Card card = terminal.connect("T=0");
             CardChannel channel = card.getBasicChannel();
 
             // Gửi lệnh APDU để chọn ứng dụng của thẻ
@@ -360,7 +436,7 @@ private boolean sendToSmartCard(byte[] imageBytes) {
             }
 
             CardTerminal terminal = terminals.list().get(0);
-            Card card = terminal.connect("T=1");
+            Card card = terminal.connect("T=0");
             CardChannel channel = card.getBasicChannel();
             // Kết nối đến terminal đầu tiên
 
@@ -413,7 +489,7 @@ private boolean sendToSmartCard(byte[] imageBytes) {
             }
 
             CardTerminal terminal = terminals.list().get(0);
-            Card card = terminal.connect("T=1");
+            Card card = terminal.connect("T=0");
             CardChannel channel = card.getBasicChannel();
 
             if (channel == null) {
@@ -493,7 +569,7 @@ private boolean sendToSmartCard(byte[] imageBytes) {
             }
 
             CardTerminal terminal = terminals.list().get(0);
-            Card card = terminal.connect("T=1");
+            Card card = terminal.connect("T=0");
             CardChannel channel = card.getBasicChannel();
 
             ID = ID.trim();
@@ -584,11 +660,111 @@ private boolean sendToSmartCard(byte[] imageBytes) {
 
     return baos.toByteArray();
 }
+     
+     private boolean sendToSmartCard(byte[] imageBytes) {
+        try {
+    TerminalFactory factory = TerminalFactory.getDefault();
+    CardTerminal terminal = factory.terminals().list().get(0);
+    Card card = terminal.connect("T=0");
+    CardChannel channel = card.getBasicChannel();
+
+    int chunkSize = 255;
+    int offset = 0;
+
+    // Gửi từng mảnh dữ liệu
+    while (offset < imageBytes.length) {
+        int length = Math.min(chunkSize, imageBytes.length - offset);
+        byte[] chunk = new byte[length];
+        System.arraycopy(imageBytes, offset, chunk, 0, length);
+
+        CommandAPDU command = new CommandAPDU(0xA4, 0x01, // INS_NHAP
+                (byte) (offset >> 8), (byte) (offset & 0xFF), chunk);
+        ResponseAPDU response = channel.transmit(command);
+
+        if (response.getSW() != 0x9000) {
+            System.out.println("Lỗi tại offset " + offset + ": " + Integer.toHexString(response.getSW()));
+            card.disconnect(false);
+            return false;
+        }
+
+        offset += length;
+    }
+
+    // Gửi lệnh xuất để lấy dữ liệu
+    CommandAPDU exportCommand = new CommandAPDU(0xA4, 0x02, 0x00, 0x00, chunkSize); // INS_XUAT
+    ResponseAPDU exportResponse = channel.transmit(exportCommand);
+    byte[] receivedData = exportResponse.getData();
+    System.out.println("Dữ liệu trên thẻ: " + Arrays.toString(receivedData));
+
+    card.disconnect(false);
+    return true;
+} catch (CardException e) {
+    e.printStackTrace();
+    JOptionPane.showMessageDialog(null, "Lỗi kết nối thẻ: " + e.getMessage());
+    return false;
+}
+
+    }
+     
+     
+     public void changePin(String oldPin, String newPin) {
+        byte[] oldPinBytes = oldPin.getBytes();
+        byte[] newPinBytes = newPin.getBytes();
+        int lc = oldPinBytes.length + 1 + newPinBytes.length; // oldPin + separator + newPin
+ 
+        try {
+            // Kết nối đến thẻ
+            TerminalFactory factory = TerminalFactory.getDefault();
+            CardTerminals terminals = factory.terminals();
+ 
+            if (terminals.list().isEmpty()) {
+                JOptionPane.showMessageDialog(null, "Không tìm thấy trình đọc thẻ.");
+                return;
+            }
+ 
+            CardTerminal terminal = terminals.list().get(0);
+            Card card = terminal.connect("T=0");
+            CardChannel channel = card.getBasicChannel();
+ 
+            // Tạo lệnh APDU để thay đổi mã PIN
+            byte[] command = new byte[5 + lc];
+            command[0] = (byte) 0xA4;  // CLA
+            command[1] = (byte) 0x14;  // INS
+            command[2] = 0x00;         // P1
+            command[3] = 0x00;         // P2
+            command[4] = (byte) lc;    // LC
+            System.arraycopy(oldPinBytes, 0, command, 5, oldPinBytes.length);
+            command[5 + oldPinBytes.length] = (byte) 0x03; // Separator
+            System.arraycopy(newPinBytes, 0, command, 6 + oldPinBytes.length, newPinBytes.length);
+ 
+            // Gửi lệnh APDU thay đổi mã PIN
+            CommandAPDU changePinCommand = new CommandAPDU(command);
+            ResponseAPDU response = channel.transmit(changePinCommand);
+ 
+            // Kiểm tra phản hồi từ thẻ
+            if (response.getSW() == 0x9000) {
+                JOptionPane.showMessageDialog(null, "Thay đổi mã PIN thành công!");
+            } else {
+                JOptionPane.showMessageDialog(null, "Thay đổi mã PIN thất bại. Mã lỗi: "
+                        + Integer.toHexString(response.getSW()));
+            }
+ 
+        } catch (CardException e) {
+            JOptionPane.showMessageDialog(null, "Lỗi khi kết nối với thẻ.");
+            e.printStackTrace();
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(null, "Lỗi không xác định.");
+            e.printStackTrace();
+        }
+    }
+
+
 
     public void switchTab(String appBarContent, String tabContent) {
 
         String infoCard = getInfoCard();
-        byte[] infoIMGbyte = getAvatar();
+        
+//        byte[] infoIMGbyte = getAvatar();
         String nameCard = "";
         String idCard = "";
         String addressCard = "";
@@ -597,9 +773,9 @@ private boolean sendToSmartCard(byte[] imageBytes) {
 
         String byteImg = "";
 
-        BufferedImage imgCard = byteArrayToImage(infoIMGbyte);
+//        BufferedImage imgCard = byteArrayToImage(infoIMGbyte);
 
-        System.out.println(infoIMGbyte);
+//        System.out.println(infoIMGbyte);
 
         try {
             String[] parts = infoCard.split("\u0003"); // \u0003 là ký tự phân cách 0x03
@@ -662,6 +838,8 @@ private boolean sendToSmartCard(byte[] imageBytes) {
                     JButton changeButton = new JButton("Thay đổi");
                     changeButton.setPreferredSize(new Dimension(100, 25));
                     changeButton.setFont(new Font("Arial", Font.PLAIN, 12));
+                    
+                    
 
                     // Thêm sự kiện cho nút "Thay đổi"
                     changeButton.addActionListener(e -> {
@@ -685,6 +863,8 @@ private boolean sendToSmartCard(byte[] imageBytes) {
 //                            String base64String = encodeToBase64(imageBytes);
 
 //                            System.out.println("Base64 Encoded Image: " + base64String);
+//System.out.println("Kích thước ảnh (bytes): " + imageBytes.length);
+
 
                             // Gửi mảng byte xuống Smart Card (giả sử bạn có phương thức gửi)
                             sendToSmartCard(imageBytes);
@@ -752,6 +932,10 @@ private boolean sendToSmartCard(byte[] imageBytes) {
                         phoneLabelDialog.setBorder(BorderFactory.createEmptyBorder(0, 25, 0, 0));
                         pinLabelDialog.setBorder(BorderFactory.createEmptyBorder(0, 25, 0, 0));
                         idLabelDialog.setBorder(BorderFactory.createEmptyBorder(0, 25, 0, 0));
+                        
+                        
+                        
+                        
 
                         // Nút lưu
                         JButton saveButton = new JButton("Lưu");
@@ -783,7 +967,10 @@ private boolean sendToSmartCard(byte[] imageBytes) {
                             // Đóng dialog
                             updateDialog.dispose();
                         });
+                        
+                        
 
+                        
                         // Thêm các thành phần vào dialog
                         updateDialog.add(nameLabelDialog);
                         updateDialog.add(nameField);
@@ -806,6 +993,9 @@ private boolean sendToSmartCard(byte[] imageBytes) {
 // Thêm nút vào infoPanel
                     infoPanel.add(Box.createRigidArea(new Dimension(0, 20))); // Khoảng cách
                     infoPanel.add(updateButton);
+                    
+                    
+                   
 
 //                    Kết thúc
                     infoPanel.setBorder(BorderFactory.createEmptyBorder(0, 15, 0, 0));
@@ -1295,19 +1485,30 @@ private boolean sendToSmartCard(byte[] imageBytes) {
                             String newOtp = new String(newOtpField.getPassword());
                             String newOtpConfirm = new String(newOtpConfirmField.getPassword());
 
+
                             // Validate old OTP with the validatedOtp stored in checkOTPWithCard
                             if (oldOtp.isEmpty() || newOtp.isEmpty() || newOtpConfirm.isEmpty()) {
-                                JOptionPane.showMessageDialog(contentPanel, "OTP fields cannot be empty!", "Error", JOptionPane.ERROR_MESSAGE);
+                                JOptionPane.showMessageDialog(contentPanel, "Phải điền mã vào!", "Error", JOptionPane.ERROR_MESSAGE);
                             } else if (!newOtp.equals(newOtpConfirm)) {
-                                JOptionPane.showMessageDialog(contentPanel, "New OTP and confirmation do not match!", "Error", JOptionPane.ERROR_MESSAGE);
+                                JOptionPane.showMessageDialog(contentPanel, "PIN mới và PIN xác nhận không giống nhau!", "Error", JOptionPane.ERROR_MESSAGE);
                             } else if (oldOtp.equals(newOtp)) {
-                                JOptionPane.showMessageDialog(contentPanel, "New OTP cannot be the same as the old OTP!", "Error", JOptionPane.ERROR_MESSAGE);
+                                JOptionPane.showMessageDialog(contentPanel, "Pin mới và pin cũ không được giống nhau!", "Error", JOptionPane.ERROR_MESSAGE);
                             } else if (!oldOtp.equals(validatedOtp)) {
                                 JOptionPane.showMessageDialog(contentPanel, "Old OTP is incorrect!", "Error", JOptionPane.ERROR_MESSAGE);
                             } else {
                                 validatedOtp = newOtp;
-                                JOptionPane.showMessageDialog(contentPanel, "OTP has been successfully changed!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                                changePin(oldOtp, newOtp);
+                                 try {
+                            byte[] id_card = getCardID();
+                            byte[] pubkeys = getPublicKey();
+                            saveToDatabase(id_card, pubkeys);
+                        } catch (CardException ex) {
+                            Logger.getLogger(MainPage.class.getName()).log(Level.SEVERE, null, ex);
+                        }
+ 
                             }
+                        
+
                         }
                     });
 
